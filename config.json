@@ -1,0 +1,23 @@
+{
+  "topics": [
+    "large language models",
+    "knowledge graphs",
+    "neural embeddings",
+    "transformer architecture",
+    "retrieval augmented generation",
+    "graph neural networks",
+    "chain of thought reasoning",
+    "multimodal learning"
+  ],
+  "arxiv_categories": ["cs.AI", "cs.LG", "cs.CL", "cs.IR", "cs.CV"],
+  "max_results_per_topic": 25,
+  "crawl_delay": 2.0,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "similarity_threshold": 0.65,
+  "max_edges_per_node": 10,
+  "top_concepts": 20,
+  "summary_sentences": 3,
+  "incremental": true,
+  "include_concept_nodes": true,
+  "include_author_nodes": false
+}
