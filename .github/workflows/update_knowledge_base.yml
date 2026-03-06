@@ -1,0 +1,152 @@
+name: Update AI Knowledge Base
+
+on:
+  schedule:
+    # Run every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      full_rebuild:
+        description: 'Perform a full rebuild (non-incremental)'
+        required: false
+        default: 'false'
+        type: boolean
+      skip_crawl:
+        description: 'Skip crawling step (use existing papers)'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  update-knowledge-base:
+    name: Update Knowledge Base
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Python Setup ──────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # ── Install Dependencies ──────────────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── Restore Cached Data ──────────────────────────────────────────────────
+      - name: Restore cached papers and embeddings
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/papers.json
+            data/embedding_cache/
+          key: knowledge-base-data-${{ github.run_id }}
+          restore-keys: |
+            knowledge-base-data-
+
+      # ── Run Pipeline ─────────────────────────────────────────────────────────
+      - name: Run knowledge base pipeline
+        env:
+          SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+        run: |
+          python pipeline.py \
+            ${{ github.event.inputs.full_rebuild == 'true' && '--full-rebuild' || '' }} \
+            ${{ github.event.inputs.skip_crawl == 'true' && '--skip-crawl' || '' }} \
+            --config config.json
+
+      # ── Validate Outputs ─────────────────────────────────────────────────────
+      - name: Validate graph output
+        run: |
+          python -c "
+          import json
+          with open('docs/graph_data.json') as f:
+              g = json.load(f)
+          nodes = len(g['nodes'])
+          edges = len(g['edges'])
+          print(f'Graph valid: {nodes} nodes, {edges} edges')
+          assert nodes > 0, 'Graph has no nodes!'
+          assert 'metadata' in g, 'Missing metadata!'
+          "
+
+      # ── Commit Updated Data ──────────────────────────────────────────────────
+      - name: Commit updated graph and metadata
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add docs/graph_data.json docs/metadata.json data/papers.json || true
+          git diff --staged --quiet || git commit -m "chore: update knowledge base [$(date -u '+%Y-%m-%d')]"
+
+      # ── Push Changes ─────────────────────────────────────────────────────────
+      - name: Push changes
+        uses: ad-hoc/simple-push@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Push changes (fallback)
+        run: |
+          git push origin main || echo "Nothing to push"
+
+      # ── Summary ──────────────────────────────────────────────────────────────
+      - name: Post run summary
+        run: |
+          echo "### Knowledge Base Update Summary" >> $GITHUB_STEP_SUMMARY
+          python -c "
+          import json
+          try:
+              with open('docs/metadata.json') as f:
+                  m = json.load(f)
+              print(f'| Metric | Value |')
+              print(f'|--------|-------|')
+              print(f'| Total Papers | {m["total_papers"]} |')
+              print(f'| New This Run | {m["new_papers_this_run"]} |')
+              print(f'| Graph Nodes  | {m["graph_nodes"]} |')
+              print(f'| Graph Edges  | {m["graph_edges"]} |')
+              print(f'| Updated At   | {m["updated_at"]} |')
+          except Exception as e:
+              print(f'Could not read metadata: {e}')
+          " >> $GITHUB_STEP_SUMMARY
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: update-knowledge-base
+    runs-on: ubuntu-latest
+    if: success()
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './docs'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
